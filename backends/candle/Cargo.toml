@@ -33,6 +33,7 @@ hf-hub = { workspace = true, features = ["ureq"] }
 anyhow = { workspace = true }
 tokenizers = { workspace = true }
 serial_test = { workspace = true }
+cudarc = { workspace = true, features = ["dynamic-linking"] }
 
 [build-dependencies]
 anyhow = { version = "1", features = ["backtrace"] }
