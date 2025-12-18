@@ -1,9 +1,6 @@
 use candle::{DType, Device, Result, Tensor, D};
 use candle_nn::VarBuilder;
 
-#[cfg(feature = "cuda")]
-use std::sync::OnceLock;
-
 #[cfg(all(feature = "cuda", feature = "nvrtc-kernels"))]
 mod tei_layer_norm {
     use candle::backend::BackendStorage;
@@ -13,6 +10,7 @@ mod tei_layer_norm {
     use candle::{CudaStorage, CustomOp1, DType, Layout, Result, Shape, Storage, Tensor};
     use half::{bf16, f16};
     use lazy_static::lazy_static;
+    use std::env;
 
     const SRC: &str = r#"
 #include <cuda_fp16.h>
@@ -126,10 +124,25 @@ extern "C" __global__ void tei_add_ln_bf16_nobeta(__nv_bfloat16* out, const __nv
 }
 "#;
 
+    fn cuda_include_paths() -> Vec<String> {
+        // Prefer explicit env vars, otherwise fall back to CUDA 12.4 (known-good in this environment),
+        // otherwise fall back to the default CUDA symlink.
+        let mut paths = Vec::new();
+        if let Ok(p) = env::var("CUDA_INCLUDE_PATH") {
+            paths.push(p);
+        }
+        if let Ok(cuda_path) = env::var("CUDA_PATH") {
+            paths.push(format!("{cuda_path}/include"));
+        }
+        paths.push("/usr/local/cuda-12.4/include".to_string());
+        paths.push("/usr/local/cuda/include".to_string());
+        paths
+    }
+
     fn compile_ptx() -> Result<nvrtc::safe::Ptx> {
         let opts = nvrtc::CompileOptions {
             use_fast_math: Some(true),
-            include_paths: vec!["/usr/local/cuda/include".to_string()],
+            include_paths: cuda_include_paths(),
             ..Default::default()
         };
         nvrtc::safe::compile_ptx_with_opts(SRC, opts).w()
@@ -343,25 +356,11 @@ extern "C" __global__ void tei_add_ln_bf16_nobeta(__nv_bfloat16* out, const __nv
     }
 }
 
-#[cfg(feature = "cuda")]
-fn tei_nvrtc_layer_norm_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        let Ok(v) = std::env::var("TEI_NVRTC_LAYERNORM") else {
-            return false;
-        };
-        matches!(
-            v.as_str(),
-            "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
-        )
-    })
-}
-
 /// CUDA LayerNorm implementation selection.
 ///
-/// Default is **candle-layer-norm** (stable vs reference). The NVRTC `tei_layer_norm` path can be
-/// enabled explicitly via `TEI_NVRTC_LAYERNORM=1` for experimentation.
-#[cfg(feature = "cuda")]
+/// If compiled with `nvrtc-kernels`, we use the NVRTC `tei_layer_norm` path by default.
+/// Otherwise we fall back to **candle-layer-norm**.
+#[cfg(all(feature = "cuda", feature = "nvrtc-kernels"))]
 fn layer_norm_cuda(
     hidden_states: &Tensor,
     residual: Option<&Tensor>,
@@ -369,13 +368,17 @@ fn layer_norm_cuda(
     beta: Option<&Tensor>,
     eps: f32,
 ) -> Result<Tensor> {
-    #[cfg(feature = "nvrtc-kernels")]
-    {
-        if tei_nvrtc_layer_norm_enabled() {
-            return tei_layer_norm::layer_norm(hidden_states, residual, gamma, beta, eps);
-        }
-    }
+    tei_layer_norm::layer_norm(hidden_states, residual, gamma, beta, eps)
+}
 
+#[cfg(all(feature = "cuda", not(feature = "nvrtc-kernels")))]
+fn layer_norm_cuda(
+    hidden_states: &Tensor,
+    residual: Option<&Tensor>,
+    gamma: &Tensor,
+    beta: Option<&Tensor>,
+    eps: f32,
+) -> Result<Tensor> {
     if let Some(residual) = residual {
         let (result, _) = candle_layer_norm::fused_add_layer_norm(
             hidden_states,

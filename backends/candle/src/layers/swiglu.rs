@@ -14,25 +14,24 @@ mod cuda_impl {
     use candle::{CudaStorage, CustomOp1, DType, Layout, Result, Shape, Tensor};
     use half::{bf16, f16};
     use lazy_static::lazy_static;
+    use std::env;
 
     const SWIGLU_CUDA_SRC: &str = r#"
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 
-// Match candle-kernels' silu implementation more closely:
-// `silu_fwd(x) = x / (1 + expg(-x))` where expg(__half/__nv_bfloat16) uses `hexp`.
+// `silu_fwd(x) = x / (1 + exp(-x))`.
+
 __device__ __forceinline__ __half silu_h(__half x) {
-    const __half one = __float2half_rn(1.0f);
-    // Force a half-rounded intermediate like the separate `usilu_f16` kernel would write.
-    __half y = x / (one + hexp(__hneg(x)));
-    return __float2half_rn(__half2float(y));
+    float xf = __half2float(x);
+    float yf = xf / (1.0f + expf(-xf));
+    return __float2half_rn(yf);
 }
 
 __device__ __forceinline__ __nv_bfloat16 silu_bf(__nv_bfloat16 x) {
-    const __nv_bfloat16 one = __float2bfloat16_rn(1.0f);
-    // Force a bf16-rounded intermediate like the separate `usilu_bf16` kernel would write.
-    __nv_bfloat16 y = x / (one + hexp(-x));
-    return __float2bfloat16_rn(__bfloat162float(y));
+    float xf = __bfloat162float(x);
+    float yf = xf / (1.0f + expf(-xf));
+    return __float2bfloat16_rn(yf);
 }
 
 extern "C" __global__ void swiglu_f16(__half* out, const __half* in, int n, int inner) {
@@ -60,12 +59,26 @@ extern "C" __global__ void swiglu_bf16(__nv_bfloat16* out, const __nv_bfloat16* 
 }
 "#;
 
+    fn cuda_include_paths() -> Vec<String> {
+        // Prefer explicit env vars, otherwise fall back to CUDA 12.4 (known-good in this environment),
+        // otherwise fall back to the default CUDA symlink.
+        let mut paths = Vec::new();
+        if let Ok(p) = env::var("CUDA_INCLUDE_PATH") {
+            paths.push(p);
+        }
+        if let Ok(cuda_path) = env::var("CUDA_PATH") {
+            paths.push(format!("{cuda_path}/include"));
+        }
+        paths.push("/usr/local/cuda-12.4/include".to_string());
+        paths.push("/usr/local/cuda/include".to_string());
+        paths
+    }
+
     fn compile_ptx() -> Result<nvrtc::safe::Ptx> {
         let opts = nvrtc::CompileOptions {
             use_fast_math: Some(true),
-            // NVRTC does not automatically know where CUDA headers live in this environment.
-            // These are needed for `cuda_fp16.h` / `cuda_bf16.h`.
-            include_paths: vec!["/usr/local/cuda/include".to_string()],
+            // NVRTC does not automatically know where CUDA headers live.
+            include_paths: cuda_include_paths(),
             ..Default::default()
         };
         nvrtc::safe::compile_ptx_with_opts(SWIGLU_CUDA_SRC, opts).w()
