@@ -57,11 +57,11 @@ half = { version = "2.3.1", features = ["num-traits"] }
 
 [patch.crates-io]
 cudarc = { git = "https://github.com/Narsil/cudarc" , rev = "8b4f18b4bcd5e4b1a9daf40abc3a2e27f83f06e9"}
-candle-core = { git = "https://github.com/QasimKhan5d/candle", branch = "main" }
-candle-nn = { git = "https://github.com/QasimKhan5d/candle", branch = "main" }
-candle-transformers = { git = "https://github.com/QasimKhan5d/candle", branch = "main" }
-candle-flash-attn = { git = "https://github.com/QasimKhan5d/candle", branch = "main" }
-candle-kernels = { git = "https://github.com/QasimKhan5d/candle", branch = "main" }
+candle-core = { git = "https://github.com/QasimKhan5d/candle", branch = "nomic-optimization-v0.8" }
+candle-nn = { git = "https://github.com/QasimKhan5d/candle", branch = "nomic-optimization-v0.8" }
+candle-transformers = { git = "https://github.com/QasimKhan5d/candle", branch = "nomic-optimization-v0.8" }
+candle-flash-attn = { git = "https://github.com/QasimKhan5d/candle", branch = "nomic-optimization-v0.8" }
+candle-kernels = { git = "https://github.com/QasimKhan5d/candle", branch = "nomic-optimization-v0.8" }
 
 [profile.release]
 debug = 0
