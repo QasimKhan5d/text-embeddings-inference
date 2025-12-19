@@ -231,9 +231,6 @@ fn main() -> Result<()> {
 
     // Warmup
     let warmup_iters = args.warmup;
-    if args.profile {
-        nvtx::range_push!("warmup");
-    }
     for i in 0..warmup_iters {
         let warmup_batch = if let Some(ref batches) = real_batches {
             let batch = &batches[i % batches.len()];
@@ -251,22 +248,12 @@ fn main() -> Result<()> {
         };
         let _ = backend.embed(warmup_batch)?;
     }
-    if args.profile {
-        nvtx::range_pop!();
-    }
 
     // Benchmark
     let iterations = args.iterations;
     let mut latencies: Vec<f64> = Vec::with_capacity(iterations);
 
-    if args.profile {
-        nvtx::range_push!("benchmark");
-    }
-
     for i in 0..iterations {
-        if args.profile {
-            nvtx::range_push!("iter_{}", i);
-        }
 
         let bench_batch = if let Some(ref batches) = real_batches {
             let batch = &batches[i % batches.len()];
@@ -285,10 +272,6 @@ fn main() -> Result<()> {
         let start = Instant::now();
         let result = backend.embed(bench_batch)?;
         let elapsed = start.elapsed();
-
-        if args.profile {
-            nvtx::range_pop!();
-        }
 
         latencies.push(elapsed.as_secs_f64() * 1000.0);
 
@@ -314,10 +297,6 @@ fn main() -> Result<()> {
                 }
             }
         }
-    }
-
-    if args.profile {
-        nvtx::range_pop!();
     }
 
     // Calculate statistics (skip first 5 for stability)
