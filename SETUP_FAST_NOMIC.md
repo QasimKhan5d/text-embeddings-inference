@@ -40,7 +40,7 @@ curl -X POST http://localhost:8080/embed \
 Run the inference-only benchmark to validate performance:
 
 ```bash
-cargo build --release --features candle-cuda-nvrtc -p text-embeddings-backend-candle --examples
+cargo build --release --features cuda,flash-attn,nvrtc-kernels -p text-embeddings-backend-candle --examples
 
 ./target/release/examples/benchmark_flash_nomic \
   --model-id nomic-ai/nomic-embed-text-v1.5 \
