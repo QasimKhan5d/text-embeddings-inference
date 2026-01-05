@@ -1,4 +1,5 @@
 use crate::layers::cublaslt::get_cublas_lt_wrapper;
+use crate::layers::swiglu;
 use candle::{Device, Result, Tensor};
 use serde::Deserialize;
 
@@ -87,7 +88,7 @@ impl Linear {
                     HiddenAct::Gelu => x.gelu(),
                     HiddenAct::Relu => x.relu(),
                     HiddenAct::Silu => x.silu(),
-                    HiddenAct::Swiglu => candle_nn::ops::swiglu(&x),
+                    HiddenAct::Swiglu => swiglu::swiglu(&x),
                 }
             } else {
                 Ok(x)

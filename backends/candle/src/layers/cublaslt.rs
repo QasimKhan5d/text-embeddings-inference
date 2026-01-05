@@ -1,4 +1,5 @@
 use crate::layers::HiddenAct;
+use crate::layers::swiglu;
 use candle::{Device, Result, Tensor};
 use std::sync::Once;
 
@@ -76,7 +77,7 @@ impl CublasLtWrapper {
             )?;
 
             if Some(HiddenAct::Swiglu) == act {
-                result = candle_nn::ops::swiglu(&result)?;
+                result = swiglu::swiglu(&result)?;
             }
             Ok(result)
         }
@@ -117,7 +118,7 @@ impl CublasLtWrapper {
             )?;
 
             if Some(HiddenAct::Swiglu) == act {
-                result = candle_nn::ops::swiglu(&result)?;
+                result = swiglu::swiglu(&result)?;
             }
             Ok(result)
         }
