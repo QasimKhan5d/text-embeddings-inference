@@ -34,6 +34,16 @@ __device__ __forceinline__ __nv_bfloat16 silu_bf(__nv_bfloat16 x) {
     return __float2bfloat16_rn(yf);
 }
 
+// half2 vectorized silu for better throughput
+__device__ __forceinline__ __half2 silu_h2(__half2 x) {
+    float2 xf = __half22float2(x);
+    float2 yf;
+    yf.x = xf.x / (1.0f + expf(-xf.x));
+    yf.y = xf.y / (1.0f + expf(-xf.y));
+    return __float22half2_rn(yf);
+}
+
+// Original scalar kernel for odd sizes
 extern "C" __global__ void swiglu_f16(__half* out, const __half* in, int n, int inner) {
     int i = (int)(blockIdx.x * blockDim.x + threadIdx.x);
     if (i >= n) return;
@@ -44,6 +54,39 @@ extern "C" __global__ void swiglu_f16(__half* out, const __half* in, int n, int 
     __half up   = in[base + inner];
     __half y = silu_h(gate);
     out[i] = __float2half_rn(__half2float(y * up));
+}
+
+// half2 vectorized kernel - processes 2 elements per thread
+// Requires inner to be even (which it always is for typical hidden sizes)
+extern "C" __global__ void swiglu_f16_vec2(
+    __half* __restrict__ out,
+    const __half* __restrict__ in,
+    int n,      // total output elements (rows * inner)
+    int inner   // inner dimension (hidden_size)
+) {
+    // Each thread processes 2 elements
+    int i2 = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    int n2 = n / 2;
+    if (i2 >= n2) return;
+    
+    // Map to row/col for the pair
+    int i = i2 * 2;
+    int row = i / inner;
+    int col = i - row * inner;
+    
+    // Input layout: [row, gate_0..gate_{inner-1}, up_0..up_{inner-1}]
+    int base = row * (inner * 2) + col;
+    
+    // Load gate and up as half2 (2 elements each)
+    __half2 gate = *reinterpret_cast<const __half2*>(&in[base]);
+    __half2 up   = *reinterpret_cast<const __half2*>(&in[base + inner]);
+    
+    // Compute silu(gate) * up using half2
+    __half2 y = silu_h2(gate);
+    __half2 result = __hmul2(y, up);
+    
+    // Store result
+    *reinterpret_cast<__half2*>(&out[i]) = result;
 }
 
 extern "C" __global__ void swiglu_bf16(__nv_bfloat16* out, const __nv_bfloat16* in, int n, int inner) {
@@ -132,9 +175,10 @@ extern "C" __global__ void swiglu_bf16(__nv_bfloat16* out, const __nv_bfloat16* 
 
             // Load the PTX once per process/device.
             if dev.get_func("tei_swiglu", "swiglu_f16").is_none()
+                || dev.get_func("tei_swiglu", "swiglu_f16_vec2").is_none()
                 || dev.get_func("tei_swiglu", "swiglu_bf16").is_none()
             {
-                dev.load_ptx(SWIGLU_PTX.clone(), "tei_swiglu", &["swiglu_f16", "swiglu_bf16"])
+                dev.load_ptx(SWIGLU_PTX.clone(), "tei_swiglu", &["swiglu_f16", "swiglu_f16_vec2", "swiglu_bf16"])
                     .w()?;
             }
 
@@ -144,11 +188,23 @@ extern "C" __global__ void swiglu_bf16(__nv_bfloat16* out, const __nv_bfloat16* 
                     let inp = inp.slice(o1..o2);
                     // SAFETY: output written by kernel.
                     let out = unsafe { dev.alloc::<f16>(n) }.w()?;
+                    
+                    // Use vectorized kernel if inner is even (processes 2 elements per thread)
+                    if inner % 2 == 0 && n >= 2 {
+                        let n2 = n / 2;
+                        let cfg_vec = LaunchConfig::for_num_elems(n2 as u32);
+                        let func = dev
+                            .get_func("tei_swiglu", "swiglu_f16_vec2")
+                            .ok_or_else(|| candle::Error::msg("missing tei_swiglu::swiglu_f16_vec2"))?;
+                        // SAFETY: ffi.
+                        unsafe { func.launch(cfg_vec, (&out, &inp, n as i32, inner as i32)) }.w()?;
+                    } else {
                     let func = dev
                         .get_func("tei_swiglu", "swiglu_f16")
                         .ok_or_else(|| candle::Error::msg("missing tei_swiglu::swiglu_f16"))?;
                     // SAFETY: ffi.
                     unsafe { func.launch(cfg, (&out, &inp, n as i32, inner as i32)) }.w()?;
+                    }
                     Ok((CudaStorage::wrap_cuda_slice(out, dev), out_shape))
                 }
                 DType::BF16 => {
